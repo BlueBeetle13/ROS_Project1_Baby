@@ -1,0 +1,5 @@
+<launch>
+	<node name="tempAndHumiditySensor" pkg="baby_project" type="tempAndHumiditySensor" />
+	<node name="displayAndButtons" pkg="baby_project" type="displayAndButtons" />
+
+</launch>
