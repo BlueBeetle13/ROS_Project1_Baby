@@ -45,10 +45,71 @@
 #define AF_LEFT			(AF_BASE + 4)
 
 
+// LCD display and screen
+int _lcdScreen = -1;
+int _displayOn = 1;
+
 // Audio playing
 pthread_t _audioThread;
 int _audioThreadKill = 0;
+int _audioThreadPaused = 1;
 
+// Volume control
+double _actualVolume;
+int _displayVolume;
+static char s_card[64] = "hw:0";
+snd_mixer_t *_volumeHandle = NULL;
+snd_mixer_elem_t *_volumeElem = NULL;
+
+// Shutdown Timer
+pthread_t _shutdownTimerThread;
+int _shutdownTimerThreadKill = 0;
+int _shutdownTimerSecondsRemaining = 0;
+
+
+// Timer to count down seconds for shutdown
+void* ShutdownTimerThread(void *arg)
+{
+	// Continue the countdown as long as the program is running
+	while (_shutdownTimerThreadKill == 0)
+	{
+		// Decrease timer if set
+		if (_shutdownTimerSecondsRemaining > 0)
+		{
+			_shutdownTimerSecondsRemaining --;
+			printf("Seconds: %d\n", _shutdownTimerSecondsRemaining);
+			
+			// Did we just hit 0? Stop motor and set volume = 0
+			if (_shutdownTimerSecondsRemaining == 0)
+			{
+				// Stop motor
+				system("gpio write 7 0");
+				_audioThreadPaused = 1;
+				
+				// Update LCD
+				lcdPosition(_lcdScreen, 11, 1);
+				lcdPrintf(_lcdScreen, "0  ");
+			}
+		
+			// Did we just round down to an even minute?
+			else if (_shutdownTimerSecondsRemaining % 60 == 0)
+			{
+				// Update LCD
+				lcdPosition(_lcdScreen, 11, 1);
+				lcdPrintf(_lcdScreen, "%d  ", (_shutdownTimerSecondsRemaining / 60));
+			}
+		}
+			
+		delay(1000);
+	}
+
+	pthread_exit(NULL);
+
+	return NULL;
+}
+
+
+// Play the audio tracks repeatedly
 void* PlayAudioThread(void *arg)
 {
 	mpg123_handle *mpgHandle;
@@ -116,7 +177,8 @@ void* PlayAudioThread(void *arg)
 		// Decode and play as long as we aren't shutting down
 		while (_audioThreadKill == 0 && mpg123_read(mpgHandle, buffer, bufferSize, &done) == MPG123_OK)
 		{
-			ao_play(dev, (char *)buffer, done);
+			if (_audioThreadPaused == 0)
+				ao_play(dev, (char *)buffer, done);
 		}
 
 		musicListIterator ++;
@@ -142,14 +204,7 @@ void* PlayAudioThread(void *arg)
 }
 
 
-// Volume control
-double _actualVolume;
-int _displayVolume;
-
-static char s_card[64] = "hw:0";
-snd_mixer_t *_volumeHandle = NULL;
-snd_mixer_elem_t *_volumeElem = NULL;
-
+// Init volume
 void InitVolumeControl()
 {
 	snd_mixer_selem_id_t *sid;
@@ -249,11 +304,22 @@ static unsigned char degreeChar[8] =
 0b00000
 };
 
+// Custom timer symbol character
+static unsigned char timerChar[8] =
+{
+0b11111,
+0b10001,
+0b01010,
+0b00100,
+0b00100,
+0b01010,
+0b10001,
+0b11111
+};
 
-// LCD Display static vars and Toggle screen on/off function
-int _lcdScreen = -1;
-int _displayOn = 1;
 
+
+// LCD Display Toggle screen on/off
 void ToggleDisplay(int  displayOn)
 {
 	digitalWrite(AF_RED, !displayOn);
@@ -293,6 +359,13 @@ void NodeShutdown(int sig)
 
 	if (_volumeHandle != NULL)
 		snd_mixer_close(_volumeHandle);
+		
+	// Kill the Shutdown Timer Thread
+	_shutdownTimerThreadKill = 1;
+	delay(1000);
+	
+	// Stop the motor
+	system("gpio write 7 0");
 
 
 	// Clear and turn off lcd display
@@ -323,6 +396,12 @@ int main(int argc, char **argv)
 		ROS_INFO("wiringPi setup failed");
 		return -1;
 	}
+	
+	// Init the shutdown for the voltage regulator (which controls the motor)
+	system("gpio mode 7 out");
+	system("gpio write 7 0");
+	pthread_create(&_shutdownTimerThread, NULL, &ShutdownTimerThread, NULL);
+	
 
 	// Init the I2C expander chip
 	mcp23017Setup(AF_BASE, 0x20);
@@ -368,6 +447,7 @@ int main(int argc, char **argv)
 
 	// Define the new degree char
 	lcdCharDef(_lcdScreen, 2, degreeChar);
+	lcdCharDef(_lcdScreen, 3, timerChar);
 
 	// Init the Display
 	lcdPosition(_lcdScreen, 0, 0);
@@ -375,12 +455,13 @@ int main(int argc, char **argv)
 
 	lcdPosition(_lcdScreen, 9, 0);
 	lcdPuts(_lcdScreen, "H:");
-
 	lcdPosition(_lcdScreen, 0, 1);
 	lcdPuts(_lcdScreen, "V:");
 
 	lcdPosition(_lcdScreen, 9, 1);
-	lcdPuts(_lcdScreen, "S:");
+	lcdPutchar(_lcdScreen, 3);
+	lcdPosition(_lcdScreen, 10, 1);
+	lcdPuts(_lcdScreen, ":");
 
 
 	// Init the Volume control
@@ -394,7 +475,6 @@ int main(int argc, char **argv)
 	lcdPosition(_lcdScreen, 2, 1);
 	lcdPrintf(_lcdScreen, "%d%% ", _displayVolume);
 
-
 	// Create the Audio thread
 	int err = pthread_create(&_audioThread, NULL, &PlayAudioThread, NULL);
 
@@ -403,8 +483,8 @@ int main(int argc, char **argv)
 	bool displayButtonDown = false;
 	bool volumeUpButtonDown = false;
 	bool volumeDownButtonDown = false;
-	bool speedIncreaseButtonDown = false;
-	bool speedDecreaseButtonDown = false;
+	bool timerIncreaseButtonDown = false;
+	bool timerDecreaseButtonDown = false;
 
 	// Loop until exist
 	while (ros::ok())
@@ -474,29 +554,145 @@ int main(int argc, char **argv)
 		}
 
 
-		// Mobile Speed Increase (RIGHT)
-		if (!speedIncreaseButtonDown && digitalRead(AF_RIGHT) == LOW)
+		// Shutdown Timer Increase (RIGHT)
+		if (!timerIncreaseButtonDown && digitalRead(AF_RIGHT) == LOW)
 		{
-			ROS_INFO("Mobile Speed Increase");
+			ROS_INFO("Shutdown Timer Increase");
+			
+			// If the timer was at -1, stop the motor and set to 0 (-1 means continually run)
+			if (_shutdownTimerSecondsRemaining == -1)
+			{
+				// Zero timer
+				_shutdownTimerSecondsRemaining = 0;
+				
+				// Stop motor
+				system("gpio write 7 0");
+				
+				// Pause audio
+				_audioThreadPaused = 1;
+			}
+			
+			// The timer was at 0 and we are starting, or greater than 1 and the time is being increased
+			else
+			{
+				// If the timer was at 0, start the motor
+				if (_shutdownTimerSecondsRemaining == 0)
+				{
+					// Start motor
+					system("gpio write 7 1");
+					
+					// Play audio
+					_audioThreadPaused = 0;
+				}
+			
+				// Find the remainder to the nearest 5 minute interval
+				int remainder = _shutdownTimerSecondsRemaining % (5 * 60);
+				
+				int secondsRemainingRoundedDown = _shutdownTimerSecondsRemaining - remainder;
+			
+				// We are within 10 seconds of a 5 minute interval
+				if (remainder > ((5 * 60) - 10))
+				{
+					_shutdownTimerSecondsRemaining += ((5 * 60) - remainder);
+					_shutdownTimerSecondsRemaining += (5 * 60);
+				}
+					
+				// Increase to the nearest 5 minute interval
+				else
+					_shutdownTimerSecondsRemaining = secondsRemainingRoundedDown + (5 * 60);
+			}
+			
+			// Update display
+			lcdPosition(_lcdScreen, 11, 1);
+			if (_shutdownTimerSecondsRemaining == -1)
+				lcdPrintf(_lcdScreen, "Inf");
+			else
+				lcdPrintf(_lcdScreen, "%d  ", (_shutdownTimerSecondsRemaining - (_shutdownTimerSecondsRemaining % (5 * 60))) / 60);
 
-			speedIncreaseButtonDown = true;
+			timerIncreaseButtonDown = true;
 		}
-		else if (speedIncreaseButtonDown && digitalRead(AF_RIGHT) == HIGH)
+		else if (timerIncreaseButtonDown && digitalRead(AF_RIGHT) == HIGH)
 		{
-			speedIncreaseButtonDown = false;
+			timerIncreaseButtonDown = false;
 		}
 
 
-		// Mobile Speed Decrease (LEFT)
-		if (!speedDecreaseButtonDown && digitalRead(AF_LEFT) == LOW)
+		// Shutdown Timer Decrease (LEFT)
+		if (!timerDecreaseButtonDown && digitalRead(AF_LEFT) == LOW)
 		{
-			ROS_INFO("Mobile Speed Decrease");
+			ROS_INFO("Shutdown Timer Decrease");
+			
+			// If the timer was at -1, stop the motor and set to 0 (-1 means continually run)
+			if (_shutdownTimerSecondsRemaining == -1)
+			{
+				// Zero timer
+				_shutdownTimerSecondsRemaining = 0;
+				
+				// Stop motor
+				system("gpio write 7 0");
+				
+				// Pause audio
+				_audioThreadPaused = 1;
+			}
+			
+			// If the timer is at 0, set the -1 to continually run
+			else if (_shutdownTimerSecondsRemaining == 0)
+			{
+				// Set timer to Inf
+				_shutdownTimerSecondsRemaining = -1;
+				
+				// Start motor
+				system("gpio write 7 1");
+				
+				// Play audio
+				_audioThreadPaused = 0;
+			}
+			
+			// The timer is between 0 and 5 minutes, stop
+			else if (_shutdownTimerSecondsRemaining < 5 * 60)
+			{
+				// Zero timer
+				_shutdownTimerSecondsRemaining = 0;
+				
+				// Stop motor
+				system("gpio write 7 0");
+				
+				// Pause audio
+				_audioThreadPaused = 1;
+			}
+			
+			// The timer is greater than 5 minutes, reduce to nearest 5 minutes value lower
+			else
+			{
+				int remainder = _shutdownTimerSecondsRemaining % (5 * 60);
+				
+				// Within 10 seconds of the even 5 minute interval, remove the remainder and 5 minutes
+				if (remainder < 10)
+				{
+					_shutdownTimerSecondsRemaining -= remainder;
+					_shutdownTimerSecondsRemaining -= (5 * 60);
+				}
+				
+				// Greater than 10 seconds remainder, just round down to nearest 5 minutes
+				else
+				{
+					_shutdownTimerSecondsRemaining -= remainder;
+				}
+			}
+			
+			
+			// Update display
+			lcdPosition(_lcdScreen, 11, 1);
+			if (_shutdownTimerSecondsRemaining == -1)
+				lcdPrintf(_lcdScreen, "Inf");
+			else
+				lcdPrintf(_lcdScreen, "%d  ", (_shutdownTimerSecondsRemaining - (_shutdownTimerSecondsRemaining % (5 * 60))) / 60);
 
-			speedDecreaseButtonDown = true;
+			timerDecreaseButtonDown = true;
 		}
-		else if (speedDecreaseButtonDown && digitalRead(AF_LEFT) == HIGH)
+		else if (timerDecreaseButtonDown && digitalRead(AF_LEFT) == HIGH)
 		{
-			speedDecreaseButtonDown = false;
+			timerDecreaseButtonDown = false;
 		}
 
 

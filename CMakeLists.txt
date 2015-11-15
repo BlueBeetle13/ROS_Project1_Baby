@@ -130,7 +130,6 @@ include_directories(
 ## Declare a C++ executable
 add_executable(displayAndButtons src/displayAndButtons.cpp)
 add_executable(tempAndHumiditySensor src/tempAndHumiditySensor.cpp)
-add_executable(mobileServo src/mobileServo.cpp)
 
 
 ## Add cmake target dependencies of the executable
@@ -148,11 +147,6 @@ target_link_libraries(displayAndButtons
 )
 
 target_link_libraries(tempAndHumiditySensor
-  ${catkin_LIBRARIES}
-  wiringPi
-)
-
-target_link_libraries(mobileServo
   ${catkin_LIBRARIES}
   wiringPi
 )
