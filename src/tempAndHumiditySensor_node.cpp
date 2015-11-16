@@ -2,15 +2,25 @@
 #include <time.h>
 #include <signal.h>
 
+// ROS
 #include "ros/ros.h"
 #include "baby_project/tempAndHumidity.h"
+
+// wiringPi
 #include <wiringPi.h>
 #include <wiringPiI2C.h>
 
+// Wait between reading the sensor, the sensor goes into sleep mode as constantly running
+// effects measurements (data sheet says constantly running creates heat), so wait between readings
+// enough so that the device should stay cool
+#define WAIT_BETWEEN_READINGS	10000
+
+// Node shutdown handler
 void NodeShutdown(int sig)
 {
 	ROS_INFO("Temperature and Humidity Sensor Node - Shutdown");
 
+	// Shutdown ROS
 	ros::shutdown();
 }
 
@@ -20,6 +30,7 @@ int main(int argc, char **argv)
 	ros::init(argc, argv, "tempAndHumiditySensor");
 	ros::NodeHandle nodeHandle;
 
+	// Shutdown handler
 	signal(SIGINT, NodeShutdown);
 
 	// ROS - Adverstise that we will be pushlishing messages
@@ -95,7 +106,7 @@ int main(int argc, char **argv)
 
 			ROS_INFO("Temp: %.1f\t\tHum: %.1f\n", temperature, humidity);
 
-			// Only send if the data is reasonable
+			// Only send if the data is reasonable, filter data anomalies
 			if (temperature != 0.0 && temperature != -55.0)
 			{
 				// Create the message to publish

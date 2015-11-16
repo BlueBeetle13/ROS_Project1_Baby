@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <vector>
 #include <string>
+#include <math.h>
 
 // ROS
 #include "ros/ros.h"
@@ -19,8 +20,10 @@
 #include <ao/ao.h>
 #include <mpg123.h>
 #include <alsa/asoundlib.h>
-#include <math.h>
-#define AUDIO_BITS		8
+
+// Debug Mode verbose output
+#define DEBUG_MODE		1
+
 
 // Wiring PI defines for I2C
 #define AF_BASE			100
@@ -43,252 +46,6 @@
 #define AF_DOWN			(AF_BASE + 2)
 #define AF_UP			(AF_BASE + 3)
 #define AF_LEFT			(AF_BASE + 4)
-
-
-// LCD display and screen
-int _lcdScreen = -1;
-int _displayOn = 1;
-
-// Audio playing
-pthread_t _audioThread;
-int _audioThreadKill = 0;
-int _audioThreadPaused = 1;
-
-// Volume control
-double _actualVolume;
-int _displayVolume;
-static char s_card[64] = "hw:0";
-snd_mixer_t *_volumeHandle = NULL;
-snd_mixer_elem_t *_volumeElem = NULL;
-
-// Shutdown Timer
-pthread_t _shutdownTimerThread;
-int _shutdownTimerThreadKill = 0;
-int _shutdownTimerSecondsRemaining = 0;
-
-
-// Timer to count down seconds for shutdown
-void* ShutdownTimerThread(void *arg)
-{
-	// Continue the countdown as long as the program is running
-	while (_shutdownTimerThreadKill == 0)
-	{
-		// Decrease timer if set
-		if (_shutdownTimerSecondsRemaining > 0)
-		{
-			_shutdownTimerSecondsRemaining --;
-			printf("Seconds: %d\n", _shutdownTimerSecondsRemaining);
-			
-			// Did we just hit 0? Stop motor and set volume = 0
-			if (_shutdownTimerSecondsRemaining == 0)
-			{
-				// Stop motor
-				system("gpio write 7 0");
-				_audioThreadPaused = 1;
-				
-				// Update LCD
-				lcdPosition(_lcdScreen, 11, 1);
-				lcdPrintf(_lcdScreen, "0  ");
-			}
-		
-			// Did we just round down to an even minute?
-			else if (_shutdownTimerSecondsRemaining % 60 == 0)
-			{
-				// Update LCD
-				lcdPosition(_lcdScreen, 11, 1);
-				lcdPrintf(_lcdScreen, "%d  ", (_shutdownTimerSecondsRemaining / 60));
-			}
-		}
-			
-		delay(1000);
-	}
-
-	pthread_exit(NULL);
-
-	return NULL;
-}
-
-
-// Play the audio tracks repeatedly
-void* PlayAudioThread(void *arg)
-{
-	mpg123_handle *mpgHandle;
-	unsigned char *buffer;
-	size_t bufferSize;
-	size_t done;
-	int err;
-
-	int driver;
-	ao_device *dev;
-	ao_sample_format format;
-	int channels, encoding;
-	long rate;
-
-	std::vector<std::string> musicList;
-
-	// Get a list of all the songs in the /home/pi/music directory
-	DIR *dir;
-	struct dirent *ent;
-	if ((dir = opendir("/home/pi/music")) != NULL)
-	{
-		while ((ent = readdir(dir)) != NULL)
-		{
-			if (strlen(ent->d_name) > 2)
-			{
-				std::string filePath = "/home/pi/music/";
-				filePath.append(ent->d_name);
-
-				printf("%s\n", filePath.c_str());
-				musicList.push_back(filePath);
-			}
-		}
-
-		closedir(dir);
-	}
-
-
-	// Init the audio
-	ao_initialize();
-	driver = ao_default_driver_id();
-	mpg123_init();
-	mpgHandle = mpg123_new(NULL, &err);
-	bufferSize = mpg123_outblock(mpgHandle);
-	buffer = (unsigned char *)malloc(bufferSize * sizeof(unsigned char));
-
-
-	// Continually repeat through the list of songs
-	std::vector<std::string>::const_iterator musicListIterator = musicList.begin();
-	while (_audioThreadKill == 0 && musicListIterator != musicList.end())
-	{
-		printf("Track: %s\n", (*musicListIterator).c_str());
-
-		// Open the file and get the decoding format
-		mpg123_open(mpgHandle, (*musicListIterator).c_str());
-		mpg123_getformat(mpgHandle, &rate, &channels, &encoding);
-
-		// Set the output format and open the output device
-		format.bits = mpg123_encsize(encoding) * AUDIO_BITS;
-		format.rate = rate;
-		format.channels = channels;
-		format.byte_format = AO_FMT_NATIVE;
-		format.matrix = 0;
-		dev = ao_open_live(driver, &format, NULL);
-
-		// Decode and play as long as we aren't shutting down
-		while (_audioThreadKill == 0 && mpg123_read(mpgHandle, buffer, bufferSize, &done) == MPG123_OK)
-		{
-			if (_audioThreadPaused == 0)
-				ao_play(dev, (char *)buffer, done);
-		}
-
-		musicListIterator ++;
-
-		if (musicListIterator == musicList.end())
-			musicListIterator = musicList.begin();
-	}
-
-	// Clean up
-	free(buffer);
-	ao_close(dev);
-	mpg123_close(mpgHandle);
-	mpg123_delete(mpgHandle);
-	mpg123_exit();
-	ao_shutdown();
-
-
-	ROS_INFO("Audio Thread Finished");
-
-	pthread_exit(NULL);
-
-	return NULL;
-}
-
-
-// Init volume
-void InitVolumeControl()
-{
-	snd_mixer_selem_id_t *sid;
-	snd_mixer_selem_id_alloca(&sid);
-	snd_mixer_selem_id_set_index(sid, 0);
-	snd_mixer_selem_id_set_name(sid, "PCM");
-
-	if (snd_mixer_open(&_volumeHandle, 0) < 0)
-	{
-		ROS_INFO("Error opening volume mixer");
-		return;
-	}
-
-	if (snd_mixer_attach(_volumeHandle, s_card) < 0)
-	{
-		ROS_INFO("Error attaching mixer");
-		snd_mixer_close(_volumeHandle);
-		return;
-	}
-
-	if (snd_mixer_selem_register(_volumeHandle, NULL, NULL) < 0)
-	{
-		ROS_INFO("Error registering mixer");
-		snd_mixer_close(_volumeHandle);
-		return;
-	}
-
-	if (snd_mixer_load(_volumeHandle) < 0)
-	{
-		ROS_INFO("Error loading mixer");
-		snd_mixer_close(_volumeHandle);
-		return;
-	}
-
-	_volumeElem = snd_mixer_find_selem(_volumeHandle, sid);
-	if (!_volumeElem)
-	{
-		ROS_INFO("Error finding volume control");
-		snd_mixer_close(_volumeHandle);
-	}
-}
-
-double GetCurrentVolume()
-{
-	long max, min, value;
-	int err = -1;
-
-	// Volume Range
-	err = snd_mixer_selem_get_playback_dB_range(_volumeElem, &min, &max);
-
-	if (err >= 0)
-	{
-		// Current volume
-		err = snd_mixer_selem_get_playback_dB(_volumeElem, (snd_mixer_selem_channel_id_t)0, &value);
-		printf("V: %ld", value);
-
-		if (err >= 0)
-		{
-			// Volume is logarithmic, convert to value of 0.0 -> 1.0
-			return exp10((value - max) / 6000.0);
-		}
-	}
-
-	// Fail
-	return 0;
-}
-
-void SetVolume(double newVolume)
-{
-	long min, max, value;
-	int err= -1;
-
-	if (newVolume < 0.017170)
-		newVolume = 0.017170;
-	else if (newVolume > 1.0)
-		newVolume = 1.0;
-
-	err = snd_mixer_selem_get_playback_dB_range(_volumeElem, &min, &max);
-	if (err >= 0)
-	{
-		value = lrint(6000.0 * log10(newVolume)) + max;
-		snd_mixer_selem_set_playback_dB(_volumeElem, (snd_mixer_selem_channel_id_t)0, value, 0);
-	}
-}
 
 
 // Custom degree symbol character
@@ -318,8 +75,292 @@ static unsigned char timerChar[8] =
 };
 
 
+// LCD display and screen
+int _lcdScreen = -1;
+int _displayOn = 1;
 
-// LCD Display Toggle screen on/off
+// Audio playing
+pthread_t _audioThread;
+int _audioThreadKill = 0;
+
+// Volume control
+double _actualVolume;
+int _displayVolume;
+static char s_card[64] = "hw:0";
+snd_mixer_t *_volumeHandle = NULL;
+snd_mixer_elem_t *_volumeElem = NULL;
+
+// Shutdown Timer
+pthread_t _shutdownTimerThread;
+int _shutdownTimerThreadKill = 0;
+int _shutdownTimerSecondsRemaining = 0;
+bool _isTimerShutdown = true;
+
+
+
+
+// ***
+// Audio
+// ***
+
+// Play the audio tracks repeatedly
+void* PlayAudioThread(void *arg)
+{
+	mpg123_handle *mpgHandle;
+	unsigned char *buffer;
+	size_t bufferSize;
+	size_t done;
+	int err;
+
+	int driver;
+	ao_device *dev;
+	ao_sample_format format;
+	int channels, encoding;
+	long rate;
+
+	// This vector will hold the paths to all the mp3 files
+	std::vector<std::string> musicList;
+
+	// Get a list of all the songs in the /home/pi/music directory
+	DIR *dir;
+	struct dirent *ent;
+	if ((dir = opendir("/home/pi/music")) != NULL)
+	{
+		while ((ent = readdir(dir)) != NULL)
+		{
+			// Get all files, not the . and .. folders
+			if (strlen(ent->d_name) > 2)
+			{
+				std::string filePath = "/home/pi/music/";
+				filePath.append(ent->d_name);
+
+				if (DEBUG_MODE)
+					printf("%s\n", filePath.c_str());
+
+				musicList.push_back(filePath);
+			}
+		}
+
+		closedir(dir);
+	}
+
+
+	// Init the audio
+	ao_initialize();
+	driver = ao_default_driver_id();
+	mpg123_init();
+	mpgHandle = mpg123_new(NULL, &err);
+	bufferSize = mpg123_outblock(mpgHandle);
+	buffer = (unsigned char *)malloc(bufferSize * sizeof(unsigned char));
+
+
+	// Continually repeat through the list of songs, as long as the thread is not killed
+	std::vector<std::string>::const_iterator musicListIterator = musicList.begin();
+	while (_audioThreadKill == 0 && musicListIterator != musicList.end())
+	{
+		if (DEBUG_MODE)
+			printf("Now playing track: %s\n", (*musicListIterator).c_str());
+
+		// Open the file and get the decoding format
+		mpg123_open(mpgHandle, (*musicListIterator).c_str());
+		mpg123_getformat(mpgHandle, &rate, &channels, &encoding);
+
+		// Set the output format and open the output device
+		format.bits = mpg123_encsize(encoding) * 8;
+		format.rate = rate;
+		format.channels = channels;
+		format.byte_format = AO_FMT_NATIVE;
+		format.matrix = 0;
+		dev = ao_open_live(driver, &format, NULL);
+
+		// Decode and play as long as we aren't shutting down
+		while (_audioThreadKill == 0 && mpg123_read(mpgHandle, buffer, bufferSize, &done) == MPG123_OK)
+		{
+			// Play the audio in the buffer
+			ao_play(dev, (char *)buffer, done);
+		}
+
+		// Move on to the next song
+		musicListIterator ++;
+
+		// If at the end of the playlist, repeat the playlist
+		if (musicListIterator == musicList.end())
+			musicListIterator = musicList.begin();
+	}
+
+	// Clean up and close
+	free(buffer);
+	ao_close(dev);
+	mpg123_close(mpgHandle);
+	mpg123_delete(mpgHandle);
+	mpg123_exit();
+	ao_shutdown();
+
+	ROS_INFO("Audio Thread Finished");
+
+	pthread_exit(NULL);
+
+	return NULL;
+}
+
+
+// Init volume
+int InitVolumeControl()
+{
+	snd_mixer_selem_id_t *sid;
+	snd_mixer_selem_id_alloca(&sid);
+	snd_mixer_selem_id_set_index(sid, 0);
+	snd_mixer_selem_id_set_name(sid, "PCM");
+
+	if (snd_mixer_open(&_volumeHandle, 0) < 0)
+	{
+		ROS_INFO("Error opening volume mixer");
+		return -1;
+	}
+
+	if (snd_mixer_attach(_volumeHandle, s_card) < 0)
+	{
+		ROS_INFO("Error attaching mixer");
+		snd_mixer_close(_volumeHandle);
+		return -1;
+	}
+
+	if (snd_mixer_selem_register(_volumeHandle, NULL, NULL) < 0)
+	{
+		ROS_INFO("Error registering mixer");
+		snd_mixer_close(_volumeHandle);
+		return -1;
+	}
+
+	if (snd_mixer_load(_volumeHandle) < 0)
+	{
+		ROS_INFO("Error loading mixer");
+		snd_mixer_close(_volumeHandle);
+		return -1;
+	}
+
+	_volumeElem = snd_mixer_find_selem(_volumeHandle, sid);
+	if (!_volumeElem)
+	{
+		ROS_INFO("Error finding volume control");
+		snd_mixer_close(_volumeHandle);
+		return -1;
+	}
+
+	// Success
+	return 1;
+}
+
+// Get the current device volume
+double GetCurrentVolume()
+{
+	long max, min, value;
+	int err = -1;
+
+	// Volume Range
+	err = snd_mixer_selem_get_playback_dB_range(_volumeElem, &min, &max);
+
+	if (err >= 0)
+	{
+		// Current volume
+		err = snd_mixer_selem_get_playback_dB(_volumeElem, (snd_mixer_selem_channel_id_t)0, &value);
+
+		if (DEBUG_MODE)
+			printf("Current Volume: %ld", value);
+
+		if (err >= 0)
+		{
+			// Volume is logarithmic, convert to value of 0.0 -> 1.0
+			return exp10((value - max) / 6000.0);
+		}
+	}
+
+	// Fail
+	return 0;
+}
+
+// Set the device volume
+void SetVolume(double newVolume)
+{
+	long min, max, value;
+	int err= -1;
+
+	if (newVolume < 0.017170)
+		newVolume = 0.017170;
+	else if (newVolume > 1.0)
+		newVolume = 1.0;
+
+	// Get the volume range
+	err = snd_mixer_selem_get_playback_dB_range(_volumeElem, &min, &max);
+
+	if (err >= 0)
+	{
+		// Set volume using logarithmic scale
+		value = lrint(6000.0 * log10(newVolume)) + max;
+		snd_mixer_selem_set_playback_dB(_volumeElem, (snd_mixer_selem_channel_id_t)0, value, 0);
+	}
+}
+
+
+
+// ***
+// Shutdown Motor and Audio
+// ***
+
+// Timer to count down seconds for shutdown
+void* ShutdownTimerThread(void *arg)
+{
+	// Continue the countdown as long as the program is running
+	while (_shutdownTimerThreadKill == 0)
+	{
+		// Decrease timer if set
+		if (_shutdownTimerSecondsRemaining > 0)
+		{
+			_shutdownTimerSecondsRemaining --;
+			
+			if (DEBUG_MODE)
+				printf("Seconds remaining: %d\n", _shutdownTimerSecondsRemaining);
+
+			// Did we just hit 0? Stop motor and set volume = 0
+			if (_shutdownTimerSecondsRemaining == 0)
+			{
+				_isTimerShutdown = true;
+				
+				// Stop motor
+				system("gpio write 7 0");
+				
+				// Silence audio
+				SetVolume(0.0);
+				
+				// Update LCD
+				lcdPosition(_lcdScreen, 11, 1);
+				lcdPrintf(_lcdScreen, "0  ");
+			}
+		
+			// Did we just round down to an even minute?
+			else if (_shutdownTimerSecondsRemaining % 60 == 0)
+			{
+				// Update LCD
+				lcdPosition(_lcdScreen, 11, 1);
+				lcdPrintf(_lcdScreen, "%d  ", (_shutdownTimerSecondsRemaining / 60));
+			}
+		}
+			
+		// Allow 1 second to pass
+		delay(1000);
+	}
+
+	pthread_exit(NULL);
+
+	return NULL;
+}
+
+
+
+
+
+
+// LCD Display Toggle back-light on/off
 void ToggleDisplay(int  displayOn)
 {
 	digitalWrite(AF_RED, !displayOn);
@@ -337,18 +378,18 @@ void TempAndHumidityFeedCallback(const baby_project::tempAndHumidity::ConstPtr& 
 	lcdPosition(_lcdScreen, 7, 0);
 	lcdPuts(_lcdScreen, "  ");
 
-	// Temperature
+	// Temperature - output to LCD
 	lcdPosition(_lcdScreen, 2, 0);
 	lcdPrintf(_lcdScreen, "%.1f", msg->temperature);
 	lcdPutchar(_lcdScreen, 2);
 
-	// Humidity
+	// Humidity - output to LCD
 	lcdPosition(_lcdScreen, 11, 0);
 	lcdPrintf(_lcdScreen, "%.1f%%", msg->humidity);
 }
 
 
-// Node shutdown code
+// Node shutdown handler
 void NodeShutdown(int sig)
 {
 	ROS_INFO("Display and Buttons Node - Shutdown");
@@ -361,6 +402,7 @@ void NodeShutdown(int sig)
 		snd_mixer_close(_volumeHandle);
 		
 	// Kill the Shutdown Timer Thread
+	_isTimerShutdown = true;
 	_shutdownTimerThreadKill = 1;
 	delay(1000);
 	
@@ -368,11 +410,11 @@ void NodeShutdown(int sig)
 	system("gpio write 7 0");
 
 
-	// Clear and turn off lcd display
+	// Clear and turn off LCD display
 	lcdClear(_lcdScreen);
 	ToggleDisplay(0);
 
-
+	// Shutdown ROS
 	ros::shutdown();
 }
 
@@ -383,11 +425,11 @@ int main(int argc, char **argv)
 	ros::init(argc, argv, "displayAndButtons");
 	ros::NodeHandle nodeHandle;
 
+	// Shutdown handler
 	signal(SIGINT, NodeShutdown);
 
 	// ROS - Subscribe to temp and humidity messages
 	ros::Subscriber tempAndHumiditySubscriber = nodeHandle.subscribe("tempAndHumidityFeed", 1, TempAndHumidityFeedCallback);
-
 
 
 	// Setup the WiringPi library
@@ -401,6 +443,7 @@ int main(int argc, char **argv)
 	system("gpio mode 7 out");
 	system("gpio write 7 0");
 	pthread_create(&_shutdownTimerThread, NULL, &ShutdownTimerThread, NULL);
+	_isTimerShutdown = true;
 	
 
 	// Init the I2C expander chip
@@ -445,7 +488,7 @@ int main(int argc, char **argv)
 	// Clear the screen
 	lcdClear(_lcdScreen);
 
-	// Define the new degree char
+	// Define the new degree and timer characters
 	lcdCharDef(_lcdScreen, 2, degreeChar);
 	lcdCharDef(_lcdScreen, 3, timerChar);
 
@@ -465,15 +508,23 @@ int main(int argc, char **argv)
 
 
 	// Init the Volume control
-	InitVolumeControl();
+	if (InitVolumeControl() == -1)
+	{
+		ROS_INFO("Failed to init Volume control");
+		return -1;
+	}
 	_actualVolume = 0.5;
 	_displayVolume = 50;
-	SetVolume(_actualVolume);
-	printf("Volume: %f", GetCurrentVolume());
+	SetVolume(0.0);
 
-	// Display the volume
+	if (DEBUG_MODE)
+		printf("Current volume: %f", GetCurrentVolume());
+
+
+	// Display the volume on the LCD
 	lcdPosition(_lcdScreen, 2, 1);
 	lcdPrintf(_lcdScreen, "%d%% ", _displayVolume);
+
 
 	// Create the Audio thread
 	int err = pthread_create(&_audioThread, NULL, &PlayAudioThread, NULL);
@@ -518,7 +569,10 @@ int main(int argc, char **argv)
 			if (_displayVolume > 100)
 				_displayVolume = 100;
 			_actualVolume = ((double)(_displayVolume)) / 100.0;
-			SetVolume(_actualVolume);
+				
+			// Allow stored volume setting to change, but don't change device volume if the timer is stopped
+			if (!_isTimerShutdown)
+				SetVolume(_actualVolume);
 
 			// Update display
 			lcdPosition(_lcdScreen, 2, 1);
@@ -542,7 +596,10 @@ int main(int argc, char **argv)
 			if (_displayVolume < 0)
 				_displayVolume = 0;
 			_actualVolume = ((double)(_displayVolume)) / 100.0;
-			SetVolume(_actualVolume);
+			
+			// Allow stored volume setting to change, but don't change device volume if the timer is stopped
+			if (!_isTimerShutdown)
+				SetVolume(_actualVolume);
 
 			// Update display
 			lcdPosition(_lcdScreen, 2, 1);
@@ -562,14 +619,16 @@ int main(int argc, char **argv)
 			// If the timer was at -1, stop the motor and set to 0 (-1 means continually run)
 			if (_shutdownTimerSecondsRemaining == -1)
 			{
+				_isTimerShutdown = true;
+				
 				// Zero timer
 				_shutdownTimerSecondsRemaining = 0;
 				
 				// Stop motor
 				system("gpio write 7 0");
 				
-				// Pause audio
-				_audioThreadPaused = 1;
+				// Silence audio
+				SetVolume(0.0);
 			}
 			
 			// The timer was at 0 and we are starting, or greater than 1 and the time is being increased
@@ -578,11 +637,13 @@ int main(int argc, char **argv)
 				// If the timer was at 0, start the motor
 				if (_shutdownTimerSecondsRemaining == 0)
 				{
+					_isTimerShutdown = false;
+					
 					// Start motor
 					system("gpio write 7 1");
 					
 					// Play audio
-					_audioThreadPaused = 0;
+					SetVolume(_actualVolume);
 				}
 			
 				// Find the remainder to the nearest 5 minute interval
@@ -625,19 +686,23 @@ int main(int argc, char **argv)
 			// If the timer was at -1, stop the motor and set to 0 (-1 means continually run)
 			if (_shutdownTimerSecondsRemaining == -1)
 			{
+				_isTimerShutdown = true;
+				
 				// Zero timer
 				_shutdownTimerSecondsRemaining = 0;
 				
 				// Stop motor
 				system("gpio write 7 0");
 				
-				// Pause audio
-				_audioThreadPaused = 1;
+				// Silence audio
+				SetVolume(_actualVolume);
 			}
 			
 			// If the timer is at 0, set the -1 to continually run
 			else if (_shutdownTimerSecondsRemaining == 0)
 			{
+				_isTimerShutdown = false;
+				
 				// Set timer to Inf
 				_shutdownTimerSecondsRemaining = -1;
 				
@@ -645,20 +710,22 @@ int main(int argc, char **argv)
 				system("gpio write 7 1");
 				
 				// Play audio
-				_audioThreadPaused = 0;
+				SetVolume(_actualVolume);
 			}
 			
 			// The timer is between 0 and 5 minutes, stop
 			else if (_shutdownTimerSecondsRemaining < 5 * 60)
 			{
+				_isTimerShutdown = true;
+				
 				// Zero timer
 				_shutdownTimerSecondsRemaining = 0;
 				
 				// Stop motor
 				system("gpio write 7 0");
 				
-				// Pause audio
-				_audioThreadPaused = 1;
+				// Silence audio
+				SetVolume(0.0);
 			}
 			
 			// The timer is greater than 5 minutes, reduce to nearest 5 minutes value lower
@@ -696,7 +763,7 @@ int main(int argc, char **argv)
 		}
 
 
-		// ROS - Check if any callbacks were made
+		// ROS - Check if any callbacks were made, can't call spin() as I need to check the state of the buttons
 		ros::spinOnce();
 
 

@@ -128,8 +128,8 @@ include_directories(
 # add_dependencies(baby_project ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Declare a C++ executable
-add_executable(displayAndButtons src/displayAndButtons.cpp)
-add_executable(tempAndHumiditySensor src/tempAndHumiditySensor.cpp)
+add_executable(displayAndButtons src/displayAndButtons_node.cpp)
+add_executable(tempAndHumiditySensor src/tempAndHumiditySensor_node.cpp)
 
 
 ## Add cmake target dependencies of the executable
