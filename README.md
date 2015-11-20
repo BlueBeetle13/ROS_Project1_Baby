@@ -34,7 +34,7 @@ I'll use the audio output from the RPi to connect to the mobile speaker for play
 
 To control the motor I will use a voltage regulator to supply the correct voltage in order to mimic the correct speed of the mobile. The voltage regulator also has a shutdown pin that I can tie to one of the GPIO pins in order to stop the motor.
 
-So in summary I will have a wall mounted device with an LCD and 5 buttons. 1 button will turn th LCD backlight on/off. 2 buttons will control the volume, and 2 buttons will increase or decrease the shutdown timer (including an infinite mode). The device will have to connect with wires to the mobile so the wires must be securely attached to the crib strongly so that not even baby Superman could pull them off or grab them. Our crib has wide wooden panels that allow for this I used non-toxic caulk to fasten the wire to the center of the wood panel.
+So in summary I will have a wall mounted device with an LCD and 5 buttons. 1 button will turn th LCD backlight on/off. 2 buttons will control the volume, and 2 buttons will increase or decrease the shutdown timer (including an infinite mode). The device will have to connect with wires to the mobile so the wires must be securely attached to the crib strongly so that not even baby Superman could pull them off or grab them. Our crib has wide wooden panels that allow for this I used non-toxic, child-safe, ECO-BOND caulk to fasten the wire to the center of the wood panel.
 
 
 Construction
@@ -65,9 +65,9 @@ You can see in the picture below I have stripped out the contents of the mobile,
 
 ![alt text](http://www.typhoonsoftware.com/GitHub/ROS_Project1_Baby/babyProject4.jpg "Testing the wiring")
 
-5) Once everything was set, I wrapped the wires, closed up the mobile, tested again, and my wife paited up the device box to look like it belongs in a kids room. The wires were securely fastened, and we both contributed MP3's to the music selection. It will be interesting to see what songs he likes best!
+5) Once everything was set, I wrapped the wires, closed up the mobile, tested again, and my wife painted up the device box to look like it belongs in a kids room. The wires were securely fastened with ECO-BOND, and we both contributed MP3's to the music selection. It will be interesting to see what songs he likes best!
 
-In order to have the ROS package start up with the device is powered up I added a launch file as well as a script to start ROS, set up the environment, and launch the package.
+In order to have the ROS package start up with the device is powered up I added a launch file (baby.launch) as well as a script to start ROS, set up the environment, and launch the package.
 
 ```
 #!  /bin/bash
