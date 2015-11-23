@@ -85,8 +85,11 @@ I started this script automatically by modifying the /etc/rc.local file, which I
 
 Below are pictures of the completed device and mobile. So far so good and a month left before the baby arrives to test!
 
-![alt text](http://www.typhoonsoftware.com/GitHub/ROS_Project1_Baby/babyProject4.jpg "Completed controller")
-![alt text](http://www.typhoonsoftware.com/GitHub/ROS_Project1_Baby/babyProject4.jpg "Completed mobile")
+Inside the controller
+![alt text](http://www.typhoonsoftware.com/GitHub/ROS_Project1_Baby/babyProject5.jpg "Inside the controller")
+
+My wife painted the box
+![alt text](http://www.typhoonsoftware.com/GitHub/ROS_Project1_Baby/babyProject6.jpg "Painted controller")
 
 
 Additional Thoughts
