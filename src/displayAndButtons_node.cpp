@@ -79,6 +79,10 @@ static unsigned char timerChar[8] =
 int _lcdScreen = -1;
 int _displayOn = 1;
 
+// Temperature and Humidity values
+float _currentTemperature = 0;
+float _currentHumidity = 0;
+
 // Audio playing
 pthread_t _audioThread;
 int _audioThreadKill = 0;
@@ -368,11 +372,65 @@ void ToggleDisplay(int  displayOn)
 	digitalWrite(AF_BLUE, !displayOn);
 }
 
+// Clear the display and reset to initial display
+void ClearAndInitDisplay()
+{
+	// Clear the screen
+	lcdClear(_lcdScreen);
+
+	// Don't blink or show the cursor
+	lcdCursor(_lcdScreen, false);
+	lcdCursorBlink(_lcdScreen, false);
+
+	// Temperature
+	lcdPosition(_lcdScreen, 0, 0);
+	lcdPuts(_lcdScreen, "T:");
+
+	lcdPosition(_lcdScreen, 2, 0);
+	lcdPrintf(_lcdScreen, "%.1f", _currentTemperature);
+	lcdPutchar(_lcdScreen, 2);
+
+
+	// Humidity
+	lcdPosition(_lcdScreen, 9, 0);
+	lcdPuts(_lcdScreen, "H:");
+
+	lcdPosition(_lcdScreen, 11, 0);
+	lcdPrintf(_lcdScreen, "%.1f%%", _currentHumidity);
+
+
+	// Volume
+	lcdPosition(_lcdScreen, 0, 1);
+	lcdPuts(_lcdScreen, "V:");
+
+	lcdPosition(_lcdScreen, 2, 1);
+	lcdPrintf(_lcdScreen, "%d%% ", _displayVolume);
+
+
+	// Timer
+	lcdPosition(_lcdScreen, 9, 1);
+	lcdPutchar(_lcdScreen, 3);
+	lcdPosition(_lcdScreen, 10, 1);
+	lcdPuts(_lcdScreen, ":");
+
+	lcdPosition(_lcdScreen, 11, 1);
+	if (_shutdownTimerSecondsRemaining == -1)
+		lcdPrintf(_lcdScreen, "Inf");
+	else
+		lcdPrintf(_lcdScreen, "%d  ", (_shutdownTimerSecondsRemaining - (_shutdownTimerSecondsRemaining % (5 * 60))) / 60);
+}
+
+
+
 
 // Callback for receiving Temperature and Humidity measurements
 void TempAndHumidityFeedCallback(const baby_project::tempAndHumidity::ConstPtr& msg)
 {
 	ROS_INFO("Callback: %.1f - %.1f", msg->temperature, msg->humidity);
+
+	// Save the current values
+	_currentTemperature = msg->temperature;
+	_currentHumidity = msg->humidity;
 
 	// Clear the separator spaces
 	lcdPosition(_lcdScreen, 7, 0);
@@ -380,12 +438,12 @@ void TempAndHumidityFeedCallback(const baby_project::tempAndHumidity::ConstPtr& 
 
 	// Temperature - output to LCD
 	lcdPosition(_lcdScreen, 2, 0);
-	lcdPrintf(_lcdScreen, "%.1f", msg->temperature);
+	lcdPrintf(_lcdScreen, "%.1f", _currentTemperature);
 	lcdPutchar(_lcdScreen, 2);
 
 	// Humidity - output to LCD
 	lcdPosition(_lcdScreen, 11, 0);
-	lcdPrintf(_lcdScreen, "%.1f%%", msg->humidity);
+	lcdPrintf(_lcdScreen, "%.1f%%", _currentHumidity);
 }
 
 
@@ -485,26 +543,12 @@ int main(int argc, char **argv)
 
 	ROS_INFO("Node started");
 
-	// Clear the screen
-	lcdClear(_lcdScreen);
-
 	// Define the new degree and timer characters
 	lcdCharDef(_lcdScreen, 2, degreeChar);
 	lcdCharDef(_lcdScreen, 3, timerChar);
 
-	// Init the Display
-	lcdPosition(_lcdScreen, 0, 0);
-	lcdPuts(_lcdScreen, "T:");
-
-	lcdPosition(_lcdScreen, 9, 0);
-	lcdPuts(_lcdScreen, "H:");
-	lcdPosition(_lcdScreen, 0, 1);
-	lcdPuts(_lcdScreen, "V:");
-
-	lcdPosition(_lcdScreen, 9, 1);
-	lcdPutchar(_lcdScreen, 3);
-	lcdPosition(_lcdScreen, 10, 1);
-	lcdPuts(_lcdScreen, ":");
+	// Clear and init the screen
+	ClearAndInitDisplay();
 
 
 	// Init the Volume control
@@ -549,6 +593,11 @@ int main(int argc, char **argv)
 
 			displayButtonDown = true;
 			_displayOn = !_displayOn;
+
+			// About to tuen on, clear and init the screen
+			if (_displayOn)
+				ClearAndInitDisplay();
+
 			ToggleDisplay(_displayOn);
 		}
 		else if (displayButtonDown && digitalRead(AF_SELECT) == HIGH)
@@ -714,7 +763,7 @@ int main(int argc, char **argv)
 			}
 			
 			// The timer is between 0 and 5 minutes, stop
-			else if (_shutdownTimerSecondsRemaining < 5 * 60)
+			else if (_shutdownTimerSecondsRemaining <= (5 * 60) + 10)
 			{
 				_isTimerShutdown = true;
 				
