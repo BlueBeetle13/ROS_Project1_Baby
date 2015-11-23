@@ -86,6 +86,7 @@ float _currentHumidity = 0;
 // Audio playing
 pthread_t _audioThread;
 int _audioThreadKill = 0;
+std::vector<std::string> _musicList;
 
 // Volume control
 double _actualVolume;
@@ -107,24 +108,8 @@ bool _isTimerShutdown = true;
 // Audio
 // ***
 
-// Play the audio tracks repeatedly
-void* PlayAudioThread(void *arg)
+void CreateMusicList()
 {
-	mpg123_handle *mpgHandle;
-	unsigned char *buffer;
-	size_t bufferSize;
-	size_t done;
-	int err;
-
-	int driver;
-	ao_device *dev;
-	ao_sample_format format;
-	int channels, encoding;
-	long rate;
-
-	// This vector will hold the paths to all the mp3 files
-	std::vector<std::string> musicList;
-
 	// Get a list of all the songs in the /home/pi/music directory
 	DIR *dir;
 	struct dirent *ent;
@@ -141,13 +126,35 @@ void* PlayAudioThread(void *arg)
 				if (DEBUG_MODE)
 					printf("%s\n", filePath.c_str());
 
-				musicList.push_back(filePath);
+				_musicList.push_back(filePath);
 			}
 		}
 
 		closedir(dir);
 	}
+}
 
+// Play the audio tracks repeatedly
+void* PlayAudioThread(void *arg)
+{
+	mpg123_handle *mpgHandle;
+	unsigned char *buffer;
+	size_t bufferSize;
+	size_t done;
+	int err;
+
+	int driver;
+	ao_device *dev;
+	ao_sample_format format;
+	int channels, encoding;
+	long rate;
+
+	// Randomly shuffle the tracks
+	for (int k = 0; k < _musicList.size(); k++)
+	{
+	    int r = k + rand() % (_musicList.size() - k);
+	    swap(_musicList[k], _musicList[r]);
+	}
 
 	// Init the audio
 	ao_initialize();
@@ -159,8 +166,8 @@ void* PlayAudioThread(void *arg)
 
 
 	// Continually repeat through the list of songs, as long as the thread is not killed
-	std::vector<std::string>::const_iterator musicListIterator = musicList.begin();
-	while (_audioThreadKill == 0 && musicListIterator != musicList.end())
+	std::vector<std::string>::const_iterator musicListIterator = _musicList.begin();
+	while (_audioThreadKill == 0 && musicListIterator != _musicList.end())
 	{
 		if (DEBUG_MODE)
 			printf("Now playing track: %s\n", (*musicListIterator).c_str());
@@ -188,8 +195,8 @@ void* PlayAudioThread(void *arg)
 		musicListIterator ++;
 
 		// If at the end of the playlist, repeat the playlist
-		if (musicListIterator == musicList.end())
-			musicListIterator = musicList.begin();
+		if (musicListIterator == _musicList.end())
+			musicListIterator = _musicList.begin();
 	}
 
 	// Clean up and close
@@ -335,6 +342,7 @@ void* ShutdownTimerThread(void *arg)
 				
 				// Silence audio
 				SetVolume(0.0);
+				_audioThreadKill = 1;
 				
 				// Update LCD
 				lcdPosition(_lcdScreen, 11, 1);
@@ -417,7 +425,7 @@ void ClearAndInitDisplay()
 	if (_shutdownTimerSecondsRemaining == -1)
 		lcdPrintf(_lcdScreen, "Inf");
 	else
-		lcdPrintf(_lcdScreen, "%d  ", (_shutdownTimerSecondsRemaining - (_shutdownTimerSecondsRemaining % (5 * 60))) / 60);
+		lcdPrintf(_lcdScreen, "%d  ", (_shutdownTimerSecondsRemaining / 60));
 }
 
 
@@ -570,8 +578,8 @@ int main(int argc, char **argv)
 	lcdPrintf(_lcdScreen, "%d%% ", _displayVolume);
 
 
-	// Create the Audio thread
-	int err = pthread_create(&_audioThread, NULL, &PlayAudioThread, NULL);
+	// Create the music list
+	CreateMusicList();
 
 
 	//  Allows faster looping and only accepts one button press while the button is down
@@ -678,6 +686,7 @@ int main(int argc, char **argv)
 				
 				// Silence audio
 				SetVolume(0.0);
+				_audioThreadKill = 1;
 			}
 			
 			// The timer was at 0 and we are starting, or greater than 1 and the time is being increased
@@ -693,6 +702,8 @@ int main(int argc, char **argv)
 					
 					// Play audio
 					SetVolume(_actualVolume);
+					_audioThreadKill = 0;
+					pthread_create(&_audioThread, NULL, &PlayAudioThread, NULL);
 				}
 			
 				// Find the remainder to the nearest 5 minute interval
@@ -744,7 +755,8 @@ int main(int argc, char **argv)
 				system("gpio write 7 0");
 				
 				// Silence audio
-				SetVolume(_actualVolume);
+				SetVolume(0.0);
+				_audioThreadKill = 1;
 			}
 			
 			// If the timer is at 0, set the -1 to continually run
@@ -760,6 +772,8 @@ int main(int argc, char **argv)
 				
 				// Play audio
 				SetVolume(_actualVolume);
+				_audioThreadKill = 0;
+				pthread_create(&_audioThread, NULL, &PlayAudioThread, NULL);
 			}
 			
 			// The timer is between 0 and 5 minutes, stop
@@ -775,6 +789,7 @@ int main(int argc, char **argv)
 				
 				// Silence audio
 				SetVolume(0.0);
+				_audioThreadKill = 1;
 			}
 			
 			// The timer is greater than 5 minutes, reduce to nearest 5 minutes value lower
