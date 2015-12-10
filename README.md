@@ -26,7 +26,7 @@ Since I will be developing with ROS, I am using a Raspberry Pi (in this case ver
 
 Instead of trying to make a mobile myself (which I briefly considered), I bought a used mobile to modify. Additionally, my wife will be making the hanging ornaments.
 
-I am using an AM2315 temperature and humidity sensor (https://www.adafruit.com/products/1293) which communicates over I2C. I will be using the wiringPi (http://wiringpi.com/) library to control the GPIO pins and the AM2315 datasheet to provide information on how to interface with the device over I2C. For the display, I am using a 16x2 LCD screen (https://www.adafruit.com/products/1115) and, as luck would have it, the wiringPi library contains code for this exact device. The LCD features 5 buttons and will display the temperature, humidity, current volume, and a shutdown timer. The LCD and sensor use I2C.
+I am using an AM2315 temperature and [humidity sensor]: https://www.adafruit.com/products/1293 which communicates over I2C. I will be using the wiringPi (http://wiringpi.com/) library to control the GPIO pins and the AM2315 datasheet to provide information on how to interface with the device over I2C. For the display, I am using a 16x2 LCD screen (https://www.adafruit.com/products/1115) and, as luck would have it, the wiringPi library contains code for this exact device. The LCD features 5 buttons and will display the temperature, humidity, current volume, and a shutdown timer. The LCD and sensor use I2C.
 
 I'll use the audio output from the RPi to connect to the mobile speaker for playing music. Playing the music and controlling the volume will be achieved through software libraries. I will just download MP3's, place them in a folder, and have the code scan the folder to create a playlist.
 
